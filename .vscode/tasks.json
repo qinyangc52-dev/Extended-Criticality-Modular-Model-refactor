@@ -1,0 +1,77 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure CMake",
+      "type": "shell",
+      "command": "$env:PATH='C:\\msys64\\ucrt64\\bin;'+$env:PATH; cmake -S . -B build -G \"MinGW Makefiles\" -DCMAKE_BUILD_TYPE=Release",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build Release",
+      "type": "shell",
+      "command": "$env:PATH='C:\\msys64\\ucrt64\\bin;'+$env:PATH; cmake --build build --config Release",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "group": "build",
+      "dependsOn": "Configure CMake",
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Run Smoke Simulation",
+      "type": "shell",
+      "command": "$env:PATH='C:\\msys64\\ucrt64\\bin;'+$env:PATH; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/smoke.seed smoke",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "dependsOn": "Build Release",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Stationary Bin5 Experiments",
+      "type": "shell",
+      "command": "$env:PATH='C:\\msys64\\ucrt64\\bin;'+$env:PATH; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e57_i11_bin5.seed stationary_e57_i11_bin5; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e68_i11_bin5.seed stationary_e68_i11_bin5; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e69_i11_bin5.seed stationary_e69_i11_bin5",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "dependsOn": "Build Release",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Core Synthetic Experiments",
+      "type": "shell",
+      "command": "$env:PATH='C:\\msys64\\ucrt64\\bin;'+$env:PATH; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/hysteresis_i03.seed hysteresis_i03; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/hysteresis_i08.seed hysteresis_i08; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/hysteresis_i11.seed hysteresis_i11; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e57_i11_bin1.seed stationary_e57_i11_bin1; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e68_i11_bin1.seed stationary_e68_i11_bin1; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e69_i11_bin1.seed stationary_e69_i11_bin1; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e57_i11_bin5.seed stationary_e57_i11_bin5; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e68_i11_bin5.seed stationary_e68_i11_bin5; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/stationary_e69_i11_bin5.seed stationary_e69_i11_bin5",
+      "options": {
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
+        }
+      },
+      "dependsOn": "Build Release",
+      "problemMatcher": []
+    },
+    {
+      "label": "Check Environment",
+      "type": "shell",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check_environment.ps1",
+      "problemMatcher": []
+    }
+  ]
+}

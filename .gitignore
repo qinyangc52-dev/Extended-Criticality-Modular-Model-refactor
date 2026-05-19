@@ -1,0 +1,12 @@
+build/
+results/runs/
+results/figures/*
+results/tables/*
+!results/figures/.gitkeep
+!results/tables/.gitkeep
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+getarg.log
+gprof.log

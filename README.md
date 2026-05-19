@@ -1,10 +1,50 @@
-# Extended-Criticality--Modular-Model
-Role of criticality in the structure-function relationship in the human brain. Angiolelli et al. Phys Rev Research 2025. 
+# Extended Criticality Modular Model
 
-The code is the modular large-scale LIF  model, with spatiotemporal patterns replay and an extended critical region, as described in the paper
-"The role of criticality in the structure-function relationship in the human brain" Angiolelli et al. PPR 2025. 
-The model exploit empirical information to build a large-scale brain modular LIF network model, with transient replay of stored sequencial patterns of activity, and extended critical region.
-Previous versions of the code (withour empirical informations and modules) are described in the papers "Information capacity of a network of spiking neurons" S. Scarpetta, A. de Candia Physica A 2020, and "Critical Behavior and Memory Function in a Model of Spiking Neurons with a Reservoir of Spatio-Temporal Patterns" in the Functional Role of Critical Dynamics in Neural Systems, Springer Series  11 S. Scarpetta 2019; Neural avalanches at the critical point between replay and non-replay of spatiotemporal patterns" S Scarpetta, A de Candia PLoS One 2013.
+Refactored project for the modular large-scale LIF model described in Angiolelli et al.,
+*Physical Review Research* 7, 043153 (2025).
 
-The program is in c++.  Use the command "make" to compile, and "./a.out" to run. The program reads the parameters of the simulation from the file "SEED". For any question and information please write to Silvia Scarpetta sscarpetta@unisa.it
+The scientific core is still the original C/C++ model: modular pattern construction,
+STDP-derived asymmetric connectivity, event-driven LIF dynamics, overlap, rate, Fano,
+and spike outputs are preserved. The refactor separates the simulator from Python
+analysis notebooks.
 
+## Layout
+
+- `src/model`: LIF and network model code.
+- `src/utils`: shared C/C++ utility code from the original project.
+- `src/data`: embedded tractography/DKT constants.
+- `apps/simulate`: simulator entry point.
+- `configs`: reproducible `SEED` files, including Fig.5 settings.
+- `python/criticality_analysis`: Python readers, runners, avalanche analysis, plotting.
+- `notebooks`: Jupyter figure reproduction workflows.
+- `legacy/original`: untouched source snapshot from the cloned repository.
+- `docs`: refactor, environment, and figure reproduction notes.
+
+## Build
+
+On Windows, use MSYS2/MinGW UCRT64 as documented in `docs/ENVIRONMENT.md`.
+
+```powershell
+cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+Run a quick smoke test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_config.ps1 configs/experiments/smoke.seed smoke
+```
+
+## Python Analysis
+
+```powershell
+pip install -r requirements.txt
+pip install -e .
+jupyter notebook notebooks/02_reproduce_synthetic_experiments.ipynb
+```
+
+Use `02_reproduce_synthetic_experiments.ipynb` for the full synthetic-data
+workflow: run or read core experiments first, then derive Fig.2 hysteresis,
+Fig.3/Fig.4 parameter maps and examples, and Fig.5 avalanche size/duration
+distributions using the `powerlaw` package. The older
+`01_reproduce_synthetic_figures.ipynb` is a smaller Fig.5-focused workflow.

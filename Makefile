@@ -1,12 +1,15 @@
-#
-#
-#
-SRC=main.c pvm.c fopenf.c getarg.c debug.c random.c cpu.c getmem.c mpi.c network.c hpsort.c permuta.c bisect.c tract1.c neuroni.c
+BUILD_DIR ?= build
+GENERATOR ?= MinGW Makefiles
 
-LIBS=
-CC=g++
-CC_OPTS=-w -O3
-A_OUT=a.out
+.PHONY: all configure build clean
 
-all:
-	@g++ $(CC_OPTS) $(SRC) -o $(A_OUT)
+all: build
+
+configure:
+	cmake -S . -B $(BUILD_DIR) -G "$(GENERATOR)" -DCMAKE_BUILD_TYPE=Release
+
+build: configure
+	cmake --build $(BUILD_DIR) --config Release
+
+clean:
+	cmake -E rm -rf $(BUILD_DIR)
