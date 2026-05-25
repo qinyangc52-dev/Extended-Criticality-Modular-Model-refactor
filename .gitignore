@@ -1,5 +1,7 @@
 build/
 results/runs/
+results/generated_configs/
+results/logs/
 results/figures/*
 results/tables/*
 !results/figures/.gitkeep
