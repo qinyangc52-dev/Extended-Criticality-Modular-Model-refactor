@@ -1,54 +1,47 @@
-# Fig.3 服务器部署与运行说明
+# Fig.3 临界线优先运行说明
 
-本文档用于在 Linux/Ubuntu 服务器上运行 Fig.3 完整参数空间复现，导出 `Q`、`chi_Q` 热图和三张参数表。
+本文档用于在 Linux/Ubuntu 服务器上运行 Fig.3 临界线优先 workflow。目标不是先跑满 1020 个完整网格点，而是先用粗网格定位 `chi_Q` 峰值，再围绕峰值加密，从而更快得到临界线参数和 Fig.3 风格图。
 
 ## 1. 目标输出
 
 运行完成后应得到：
 
-- `results/figures/fig3_order_parameter_Q_full.png`
-- `results/figures/fig3_order_parameter_fluctuations_chiQ_full.png`
-- `results/figures/fig3_parameter_space_full.png`
 - `results/tables/fig3_parameter_space_summary.csv`
 - `results/tables/fig3_critical_line_chiQ_peak.csv`
 - `results/tables/fig3_transition_line_Q_gradient.csv`
 - `results/tables/fig3_missing_or_failed_runs.csv`
+- `results/figures/fig3_parameter_space_critical_search.png`
+- `results/figures/fig3_chiQ_critical_line.png`
 
 其中：
 
-- `fig3_parameter_space_summary.csv`：所有 `(E0, I0)` 参数点总表。
 - `fig3_critical_line_chiQ_peak.csv`：每个 `I0` 下 `chi_Q` 最大的临界线参数。
 - `fig3_transition_line_Q_gradient.csv`：每个 `I0` 下 `Q` 随 `E0` 变化最快的跃迁线参数。
+- `fig3_parameter_space_critical_search.png`：`Q` 和 `chi_Q` 参数空间图，叠加临界线和跃迁线。
+- `fig3_chiQ_critical_line.png`：单张 Fig.3 风格 `chi_Q` 热图，黑线为临界线。
 
-## 2. 安装系统依赖
+## 2. 安装依赖
 
 ```bash
 sudo apt update
 sudo apt install -y git build-essential cmake python3 python3-venv python3-pip rsync tmux
 ```
 
-## 3. 上传或克隆项目
+如果没有 `sudo`，优先使用 conda/venv 安装 Python 依赖和新版 CMake。
 
-如果项目已有远程仓库：
+## 3. 克隆项目
 
 ```bash
 mkdir -p ~/projects
 cd ~/projects
-git clone <你的仓库地址> Extended-Criticality--Modular-Model
-cd Extended-Criticality--Modular-Model
+git clone https://github.com/qinyangc52-dev/Extended-Criticality-Modular-Model-refactor.git
+cd Extended-Criticality-Modular-Model-refactor
 ```
 
-如果没有远程仓库，从本机上传：
+GitHub 较慢时可用浅克隆代理：
 
 ```bash
-rsync -av --exclude build --exclude results/runs --exclude outputs \
-  ./Extended-Criticality--Modular-Model/ user@server:~/projects/Extended-Criticality--Modular-Model/
-```
-
-进入服务器项目目录：
-
-```bash
-cd ~/projects/Extended-Criticality--Modular-Model
+git clone --depth 1 https://gh-proxy.com/https://github.com/qinyangc52-dev/Extended-Criticality-Modular-Model-refactor.git
 ```
 
 ## 4. 创建 Python 环境
@@ -61,7 +54,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## 5. 编译 C/C++ 模拟器
+## 5. 编译模拟器
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -74,130 +67,120 @@ cmake --build build -j "$(nproc)"
 ls -lh build/criticality_sim
 ```
 
-## 6. Smoke Test
+如果 CMake 不可用，可直接 gcc 编译：
 
 ```bash
-mkdir -p results/runs/smoke_server
-cp configs/experiments/smoke.seed results/runs/smoke_server/SEED
-cd results/runs/smoke_server
-../../../build/criticality_sim > stdout.log 2> stderr.log
-cd ../../..
+mkdir -p build
+gcc -O3 -DNDEBUG \
+  apps/simulate/main.c \
+  src/model/network.c \
+  src/model/neuroni.c \
+  src/data/tract1.c \
+  src/utils/*.c \
+  -lm \
+  -o build/criticality_sim
+```
+
+## 6. Dry Run
+
+先确认任务计划：
+
+```bash
+python scripts/fig3_full_pipeline.py --config configs/fig3_critical_search.json --dry-run
+```
+
+默认计划：
+
+- coarse stage：`I0=0.0..1.9 step 0.1`，`E0=0.0..10.0 step 0.5`，共 420 个任务。
+- refine stage：围绕每条 `I0` 的 coarse `chi_Q` 峰值 `E0_peak +/- 0.4`，`step=0.1`，最多约 180 个任务。
+
+## 7. 小规模验证
+
+在正式运行前，可以只跑两条 `I0` 验证流程：
+
+```bash
+python scripts/fig3_full_pipeline.py \
+  --config configs/fig3_critical_search.json \
+  --workers 2 \
+  --limit-i0 2 \
+  --run-id smoke_i0_2
 ```
 
 检查输出：
 
 ```bash
-ls results/runs/smoke_server/output
-tail -n 20 results/runs/smoke_server/stdout.log
-tail -n 20 results/runs/smoke_server/stderr.log
+ls results/tables/smoke_i0_2
+ls results/figures/smoke_i0_2
+tail -n 30 results/logs/smoke_i0_2/fig3_critical_progress.log
+cat results/logs/smoke_i0_2/fig3_critical_status.json
 ```
 
-## 7. Fig.3 完整扫描前验证
+## 8. 正式运行
 
-先 dry-run，确认会生成 1020 个任务：
+服务器 40 vCPU 可先用 16 workers：
 
 ```bash
-source .venv/bin/activate
-python scripts/fig3_full_pipeline.py --config configs/fig3_full_grid.json --dry-run
+mkdir -p results/logs
+nohup python scripts/fig3_full_pipeline.py \
+  --config configs/fig3_critical_search.json \
+  --workers 16 \
+  > results/logs/fig3_critical_nohup.log 2>&1 &
 ```
 
-再跑 4 个小任务验证流程：
+本 workflow 不提供 `--resume`。如果想重新跑一次，不要覆盖旧目录，使用新的 `--run-id`：
 
 ```bash
-python scripts/fig3_full_pipeline.py --config configs/fig3_full_grid.json --workers 2 --limit 4 --resume
+nohup python scripts/fig3_full_pipeline.py \
+  --config configs/fig3_critical_search.json \
+  --workers 16 \
+  --run-id run_$(date +%Y%m%d_%H%M) \
+  > results/logs/fig3_critical_nohup.log 2>&1 &
 ```
 
-验证输出：
+如果默认 `results/runs/fig3_critical_search` 已存在，脚本会直接报错，避免把半成品误当成最终结果。
+
+## 9. 观察进度
+
+实时日志：
 
 ```bash
-head results/tables/fig3_parameter_space_summary.csv
-ls results/figures/fig3_*full.png
+tail -f results/logs/fig3_critical_progress.log
 ```
 
-## 8. 启动完整 Fig.3 扫描
-
-建议在 `tmux` 中运行，避免 SSH 断开导致任务停止：
+状态 JSON：
 
 ```bash
-tmux new -s fig3
-source .venv/bin/activate
-python scripts/fig3_full_pipeline.py --config configs/fig3_full_grid.json --workers 4 --resume
+watch -n 30 'cat results/logs/fig3_critical_status.json; echo; df -h .; echo; uptime'
 ```
 
-如果服务器 CPU 和内存充足，可把 `--workers 4` 调高；如果出现内存压力或 I/O 压力，降低 workers。
-
-## 9. 查看进度
-
-另开一个 SSH 或 tmux pane：
+查看模拟器进程：
 
 ```bash
-tail -f results/logs/fig3_full_pipeline.log
+pgrep -af "/build/criticality_sim"
 ```
 
-查看已完成任务数量：
+如果使用了 `--run-id smoke_i0_2` 或其它 run id，日志路径会变成：
 
 ```bash
-find results/runs/fig3_full_grid -name "q3-*.dat" | wc -l
-find results/runs/fig3_full_grid -name "medie3-*.dat" | wc -l
+results/logs/<run-id>/fig3_critical_progress.log
+results/logs/<run-id>/fig3_critical_status.json
 ```
 
-## 10. 断点续跑
+## 10. 只汇总已有结果
 
-脚本支持 `--resume`。如果中断，直接重新运行：
+如果模拟已经完成，但需要重新生成 CSV 和图：
 
 ```bash
-source .venv/bin/activate
-python scripts/fig3_full_pipeline.py --config configs/fig3_full_grid.json --workers 4 --resume
+python scripts/fig3_full_pipeline.py \
+  --config configs/fig3_critical_search.json \
+  --summarize-only
 ```
 
-已有完整 `q3` 和 `medie3` 输出的参数点会被跳过。
+如果之前使用了 `--run-id`，汇总时也必须带同一个 `--run-id`。
 
-如果只想重新汇总已有输出，不启动模拟：
-
-```bash
-python scripts/fig3_full_pipeline.py --config configs/fig3_full_grid.json --summarize-only
-```
-
-## 11. 回传结果
-
-从本机执行：
-
-```bash
-rsync -av user@server:~/projects/Extended-Criticality--Modular-Model/results/figures/ ./results/figures/
-rsync -av user@server:~/projects/Extended-Criticality--Modular-Model/results/tables/ ./results/tables/
-```
-
-如需回传全部运行数据：
-
-```bash
-rsync -av user@server:~/projects/Extended-Criticality--Modular-Model/results/runs/fig3_full_grid/ ./results/runs/fig3_full_grid/
-```
-
-## 12. 结果表字段说明
-
-### `fig3_parameter_space_summary.csv`
-
-| 字段 | 含义 |
-|---|---|
-| `run_name` | 参数点运行名称 |
-| `E0` | 结构化兴奋强度，对应 `sigma` |
-| `I0` | 全局抑制强度，对应 `delta` |
-| `seed` | 随机种子 |
-| `bin_ms` | 输出时间分辨率 |
-| `tmax_ms` | 模拟时长 |
-| `Q_mean` | 后半段平均 `q_max` |
-| `chi_Q` | 后半段平均 `q_var` |
-| `Q_max` | 后半段最大 `q_max` |
-| `rate_mean` | 后半段平均 firing rate |
-| `fano_mean` | 后半段平均 Fano factor |
-| `cv_count_mean` | 后半段 spike count CV |
-| `flexibility_n0` | 后半段超过 0.8 的 pattern 数 |
-| `status` | `ok`、`missing` 或错误信息 |
-| `output_dir` | 该参数点输出目录 |
+## 11. 结果表字段
 
 ### `fig3_critical_line_chiQ_peak.csv`
-
-这张表按每个 `I0` 找 `chi_Q` 最大的 `E0`。
 
 | 字段 | 含义 |
 |---|---|
@@ -210,11 +193,9 @@ rsync -av user@server:~/projects/Extended-Criticality--Modular-Model/results/run
 | `fano_at_peak` | 峰值处 Fano |
 | `flexibility_at_peak` | 峰值处 replay pattern 数 |
 | `run_name` | 对应运行 |
-| `confidence_flag` | 插值可靠性 |
+| `confidence_flag` | 插值可靠性；边界峰值会标记为 `edge_peak` |
 
 ### `fig3_transition_line_Q_gradient.csv`
-
-这张表按每个 `I0` 找 `Q` 随 `E0` 变化最快的位置。
 
 | 字段 | 含义 |
 |---|---|
@@ -229,9 +210,25 @@ rsync -av user@server:~/projects/Extended-Criticality--Modular-Model/results/run
 | `run_name` | 对应运行 |
 | `confidence_flag` | 插值可靠性 |
 
+## 12. 回传结果
+
+从本机执行：
+
+```bash
+rsync -av user@server:~/projects/Extended-Criticality-Modular-Model-refactor/results/figures/ ./results/figures/
+rsync -av user@server:~/projects/Extended-Criticality-Modular-Model-refactor/results/tables/ ./results/tables/
+```
+
+如使用 `--run-id`，结果在对应子目录下：
+
+```bash
+rsync -av user@server:~/projects/Extended-Criticality-Modular-Model-refactor/results/figures/<run-id>/ ./results/figures/<run-id>/
+rsync -av user@server:~/projects/Extended-Criticality-Modular-Model-refactor/results/tables/<run-id>/ ./results/tables/<run-id>/
+```
+
 ## 13. 注意事项
 
-- 1020 个模拟计算量很大，建议优先在服务器上运行。
-- 如果只想快速验证流程，使用 `--limit 4`。
-- 如果要调整扫描密度，修改 `configs/fig3_full_grid.json` 中的 `e0` 和 `i0`。
-- 当前 workflow 不改核心模型，只改变批量运行和后处理方式。
+- 该 workflow 聚焦临界线定位，不是完整 1020 点高分辨率热图。
+- 不修改 C/C++ 核心模型，只改变批量运行、进度观察和后处理。
+- 不做断点续跑；异常中断后建议换新的 `--run-id` 重新跑，避免混入半成品。
+- 服务器系统盘较小时要持续观察 `df -h .`，`bin=1` 会产生较多输出文件。

@@ -26,6 +26,7 @@ from criticality_analysis.seeds import write_seed
 
 @dataclass(frozen=True)
 class Task:
+    stage: str
     run_name: str
     e0: float
     i0: float
@@ -34,21 +35,20 @@ class Task:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run and summarize the Fig.3 E0/I0 parameter-space workflow.")
-    parser.add_argument("--config", default="configs/fig3_full_grid.json", help="JSON configuration path.")
+    parser = argparse.ArgumentParser(description="Locate Fig.3 critical lines with coarse-to-refined E0/I0 searches.")
+    parser.add_argument("--config", default="configs/fig3_critical_search.json", help="JSON configuration path.")
     parser.add_argument("--workers", type=int, default=None, help="Parallel simulation workers.")
-    parser.add_argument("--resume", action="store_true", help="Skip runs with complete q3/medie3 outputs.")
-    parser.add_argument("--dry-run", action="store_true", help="Print planned tasks without writing seeds or running simulations.")
-    parser.add_argument("--generate-only", action="store_true", help="Generate SEED files, then stop.")
-    parser.add_argument("--summarize-only", action="store_true", help="Do not run simulations; only summarize existing outputs.")
-    parser.add_argument("--limit", type=int, default=None, help="Limit task count for validation.")
+    parser.add_argument("--dry-run", action="store_true", help="Print the planned coarse search and exit.")
+    parser.add_argument("--summarize-only", action="store_true", help="Summarize an existing run root without simulations.")
+    parser.add_argument("--run-id", default=None, help="Optional subdirectory under run_root/generated_config_dir/log_dir.")
+    parser.add_argument("--limit-i0", type=int, default=None, help="Limit I0 rows for validation runs.")
     parser.add_argument("--timeout", type=int, default=None, help="Per-simulation timeout in seconds.")
     return parser.parse_args()
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = resolve_path(path)
-    with config_path.open("r", encoding="utf-8") as stream:
+    with config_path.open("r", encoding="utf-8-sig") as stream:
         config = json.load(stream)
     config["_config_path"] = str(config_path)
     return config
@@ -61,40 +61,30 @@ def resolve_path(path: str | Path) -> Path:
     return PROJECT_ROOT / path
 
 
+def scoped_path(config: dict[str, Any], key: str, run_id: str | None) -> Path:
+    base = resolve_path(config[key])
+    return base / run_id if run_id else base
+
+
+def os_cpu_count() -> int | None:
+    try:
+        import os
+
+        return os.cpu_count()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def frange(start: float, stop: float, step: float) -> list[float]:
     values: list[float] = []
     n_steps = int(round((stop - start) / step))
     for index in range(n_steps + 1):
-        value = start + index * step
-        values.append(round(value, 10))
+        values.append(round(start + index * step, 10))
     return values
 
 
 def fmt_float(value: float) -> str:
-    text = f"{value:g}".replace("-", "m").replace(".", "p")
-    return text
-
-
-def build_tasks(config: dict[str, Any]) -> list[Task]:
-    e0_values = frange(**config["e0"])
-    i0_values = frange(**config["i0"])
-    seed_dir = resolve_path(config["generated_config_dir"])
-    run_root = resolve_path(config["run_root"])
-    prefix = config["name"]
-    tasks: list[Task] = []
-    for i0 in i0_values:
-        for e0 in e0_values:
-            run_name = f"{prefix}_e{fmt_float(e0)}_i{fmt_float(i0)}"
-            tasks.append(
-                Task(
-                    run_name=run_name,
-                    e0=e0,
-                    i0=i0,
-                    seed_path=seed_dir / f"{run_name}.seed",
-                    run_dir=run_root / run_name,
-                )
-            )
-    return tasks
+    return f"{value:g}".replace("-", "m").replace(".", "p")
 
 
 def executable_path(config: dict[str, Any]) -> Path:
@@ -108,14 +98,64 @@ def executable_path(config: dict[str, Any]) -> Path:
     return configured
 
 
+def i0_values(config: dict[str, Any], limit_i0: int | None) -> list[float]:
+    values = frange(**config["i0"])
+    if limit_i0 is not None:
+        values = values[: max(0, limit_i0)]
+    return values
+
+
+def stage_seed_dir(config: dict[str, Any], run_id: str | None, stage: str) -> Path:
+    return scoped_path(config, "generated_config_dir", run_id) / stage
+
+
+def stage_run_dir(config: dict[str, Any], run_id: str | None, stage: str) -> Path:
+    return scoped_path(config, "run_root", run_id) / stage
+
+
+def build_task(config: dict[str, Any], run_id: str | None, stage: str, e0: float, i0: float) -> Task:
+    prefix = config["name"]
+    run_name = f"{prefix}_{stage}_e{fmt_float(e0)}_i{fmt_float(i0)}"
+    return Task(
+        stage=stage,
+        run_name=run_name,
+        e0=e0,
+        i0=i0,
+        seed_path=stage_seed_dir(config, run_id, stage) / f"{run_name}.seed",
+        run_dir=stage_run_dir(config, run_id, stage) / run_name,
+    )
+
+
+def build_coarse_tasks(config: dict[str, Any], run_id: str | None, limit_i0: int | None) -> list[Task]:
+    e0 = frange(**config["coarse_e0"])
+    return [build_task(config, run_id, "coarse", e, i) for i in i0_values(config, limit_i0) for e in e0]
+
+
+def build_refine_tasks(config: dict[str, Any], run_id: str | None, coarse_summary: pd.DataFrame) -> list[Task]:
+    refine = config["refine"]
+    width = float(refine["half_width"])
+    step = float(refine["step"])
+    e_min = float(config["coarse_e0"]["start"])
+    e_max = float(config["coarse_e0"]["stop"])
+    tasks: list[Task] = []
+    if coarse_summary.empty:
+        return tasks
+    ok = coarse_summary[coarse_summary["status"] == "ok"].copy()
+    for i0, group in ok.groupby("I0"):
+        group = group.sort_values("E0").reset_index(drop=True)
+        if group.empty or group["chi_Q"].isna().all():
+            continue
+        peak = float(group.loc[int(group["chi_Q"].astype(float).idxmax()), "E0"])
+        start = max(e_min, round(peak - width, 10))
+        stop = min(e_max, round(peak + width, 10))
+        for e0 in frange(start, stop, step):
+            tasks.append(build_task(config, run_id, "refine", e0, float(i0)))
+    return tasks
+
+
 def expected_outputs(task: Task) -> tuple[Path, Path]:
     output_dir = task.run_dir / "output"
     return output_dir / f"q3-{task.run_name}.dat", output_dir / f"medie3-{task.run_name}.dat"
-
-
-def has_complete_outputs(task: Task) -> bool:
-    q_file, medie_file = expected_outputs(task)
-    return q_file.exists() and q_file.stat().st_size > 0 and medie_file.exists() and medie_file.stat().st_size > 0
 
 
 def generate_seed(config: dict[str, Any], task: Task) -> None:
@@ -130,11 +170,13 @@ def generate_seed(config: dict[str, Any], task: Task) -> None:
 
 def generate_seeds(config: dict[str, Any], tasks: list[Task]) -> None:
     for task in tasks:
+        task.seed_path.parent.mkdir(parents=True, exist_ok=True)
         generate_seed(config, task)
 
 
-def run_one(task_data: dict[str, str | int | None]) -> tuple[str, int, str]:
+def run_one(task_data: dict[str, str | int | float | None]) -> tuple[str, str, int, str]:
     task = Task(
+        stage=str(task_data["stage"]),
         run_name=str(task_data["run_name"]),
         e0=float(task_data["e0"]),
         i0=float(task_data["i0"]),
@@ -145,8 +187,7 @@ def run_one(task_data: dict[str, str | int | None]) -> tuple[str, int, str]:
     timeout = task_data.get("timeout")
     task.run_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(task.seed_path, task.run_dir / "SEED")
-    output_dir = task.run_dir / "output"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    (task.run_dir / "output").mkdir(parents=True, exist_ok=True)
     started = time.strftime("%Y-%m-%d %H:%M:%S")
     stdout_file = task.run_dir / "stdout.log"
     stderr_file = task.run_dir / "stderr.log"
@@ -164,38 +205,70 @@ def run_one(task_data: dict[str, str | int | None]) -> tuple[str, int, str]:
         stdout_file.write_text(completed.stdout, encoding="utf-8", errors="replace")
         stderr_file.write_text(completed.stderr, encoding="utf-8", errors="replace")
         run_log.write_text(
-            f"started={started}\nfinished={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"stage={task.stage}\nstarted={started}\nfinished={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"exit_code={completed.returncode}\n\n[stdout]\n{completed.stdout}\n\n[stderr]\n{completed.stderr}\n",
             encoding="utf-8",
             errors="replace",
         )
-        return task.run_name, int(completed.returncode), "" if completed.returncode == 0 else str(run_log)
-    except Exception as exc:  # noqa: BLE001 - batch runner must capture failures.
+        return task.stage, task.run_name, int(completed.returncode), "" if completed.returncode == 0 else str(run_log)
+    except Exception as exc:  # noqa: BLE001
         run_log.write_text(
-            f"started={started}\nfinished={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"stage={task.stage}\nstarted={started}\nfinished={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"exception={exc!r}\n",
             encoding="utf-8",
             errors="replace",
         )
-        return task.run_name, 1, repr(exc)
+        return task.stage, task.run_name, 1, repr(exc)
 
 
-def run_tasks(config: dict[str, Any], tasks: list[Task], workers: int, resume: bool, timeout: int | None) -> None:
-    log_dir = resolve_path(config["log_dir"])
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "fig3_full_pipeline.log"
+def append_log(path: Path, message: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+    print(line, flush=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
+
+
+def write_status(path: Path, status: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def format_seconds(seconds: float | None) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return "unknown"
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, sec = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{sec:02d}s"
+    if minutes:
+        return f"{minutes}m{sec:02d}s"
+    return f"{sec}s"
+
+
+def run_tasks(
+    config: dict[str, Any],
+    run_id: str | None,
+    stage: str,
+    tasks: list[Task],
+    workers: int,
+    timeout: int | None,
+) -> None:
+    log_dir = scoped_path(config, "log_dir", run_id)
+    progress_log = log_dir / "fig3_critical_progress.log"
+    status_path = log_dir / "fig3_critical_status.json"
     executable = executable_path(config)
     if not executable.exists():
         raise FileNotFoundError(f"Simulator executable not found: {executable}")
-
-    pending = [task for task in tasks if not (resume and has_complete_outputs(task))]
-    append_log(log_path, f"planned={len(tasks)} pending={len(pending)} workers={workers} executable={executable}")
-    if not pending:
-        append_log(log_path, "No pending simulations.")
+    if not tasks:
+        append_log(progress_log, f"stage={stage} total=0 skipped")
         return
 
+    append_log(progress_log, f"stage={stage} total={len(tasks)} workers={workers} executable={executable}")
     payloads = [
         {
+            "stage": task.stage,
             "run_name": task.run_name,
             "e0": task.e0,
             "i0": task.i0,
@@ -204,30 +277,55 @@ def run_tasks(config: dict[str, Any], tasks: list[Task], workers: int, resume: b
             "executable": str(executable),
             "timeout": timeout,
         }
-        for task in pending
+        for task in tasks
     ]
+    started = time.time()
     done = 0
     failed = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(run_one, payload) for payload in payloads]
         for future in as_completed(futures):
-            run_name, exit_code, message = future.result()
+            task_stage, run_name, exit_code, message = future.result()
             done += 1
-            if exit_code != 0:
-                failed += 1
-            append_log(log_path, f"{done}/{len(pending)} {run_name} exit={exit_code} {message}")
-    append_log(log_path, f"finished pending={len(pending)} failed={failed}")
+            failed += int(exit_code != 0)
+            elapsed = time.time() - started
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (len(tasks) - done) / rate if rate > 0 else None
+            append_log(
+                progress_log,
+                (
+                    f"stage={task_stage} done={done}/{len(tasks)} ok={done - failed} failed={failed} "
+                    f"elapsed={format_seconds(elapsed)} eta={format_seconds(eta)} current={run_name} "
+                    f"exit={exit_code} {message}"
+                ),
+            )
+            write_status(
+                status_path,
+                {
+                    "stage": task_stage,
+                    "done": done,
+                    "total": len(tasks),
+                    "ok": done - failed,
+                    "failed": failed,
+                    "elapsed_seconds": round(elapsed, 2),
+                    "eta_seconds": None if eta is None else round(eta, 2),
+                    "current": run_name,
+                    "exit_code": exit_code,
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+    append_log(progress_log, f"stage={stage} finished total={len(tasks)} failed={failed}")
 
 
-def append_log(path: Path, message: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+def output_complete(task: Task) -> bool:
+    q_file, medie_file = expected_outputs(task)
+    return q_file.exists() and q_file.stat().st_size > 0 and medie_file.exists() and medie_file.stat().st_size > 0
 
 
 def summarize_task(config: dict[str, Any], task: Task) -> dict[str, Any]:
     seed_values = read_seed(task.seed_path) if task.seed_path.exists() else {}
     row: dict[str, Any] = {
+        "stage": task.stage,
         "run_name": task.run_name,
         "E0": task.e0,
         "I0": task.i0,
@@ -245,7 +343,7 @@ def summarize_task(config: dict[str, Any], task: Task) -> dict[str, Any]:
         "output_dir": str(task.run_dir / "output"),
     }
     try:
-        if not has_complete_outputs(task):
+        if not output_complete(task):
             return row
         analysis = config.get("analysis", {})
         pout = int(analysis.get("pout", 20))
@@ -268,7 +366,7 @@ def summarize_task(config: dict[str, Any], task: Task) -> dict[str, Any]:
                 "status": "ok",
             }
         )
-    except Exception as exc:  # noqa: BLE001 - summary table should retain failures.
+    except Exception as exc:  # noqa: BLE001
         row["status"] = f"error: {exc}"
     return row
 
@@ -276,25 +374,37 @@ def summarize_task(config: dict[str, Any], task: Task) -> dict[str, Any]:
 def last_fraction_frame(frame: pd.DataFrame, time_column: str, last_fraction: float) -> pd.DataFrame:
     if frame.empty or time_column not in frame:
         return frame
-    max_time = float(frame[time_column].max())
-    cutoff = max_time * (1.0 - last_fraction)
+    cutoff = float(frame[time_column].max()) * (1.0 - last_fraction)
     return frame[frame[time_column] >= cutoff]
 
 
-def summarize(config: dict[str, Any], tasks: list[Task]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    table_dir = resolve_path(config["table_dir"])
+def summarize_tasks(config: dict[str, Any], tasks: list[Task]) -> pd.DataFrame:
+    return pd.DataFrame([summarize_task(config, task) for task in tasks])
+
+
+def best_rows(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary
+    ok = summary[summary["status"] == "ok"].copy()
+    if ok.empty:
+        return ok
+    ok["stage_rank"] = ok["stage"].map({"coarse": 0, "refine": 1}).fillna(0)
+    ok = ok.sort_values(["I0", "E0", "stage_rank"])
+    return ok.drop_duplicates(["I0", "E0"], keep="last").drop(columns=["stage_rank"])
+
+
+def write_tables(config: dict[str, Any], run_id: str | None, summary: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    table_dir = scoped_path(config, "table_dir", run_id)
     table_dir.mkdir(parents=True, exist_ok=True)
-    rows = [summarize_task(config, task) for task in tasks]
-    summary = pd.DataFrame(rows)
     summary.to_csv(table_dir / "fig3_parameter_space_summary.csv", index=False)
     missing = summary[summary["status"] != "ok"].copy()
     missing.to_csv(table_dir / "fig3_missing_or_failed_runs.csv", index=False)
-    ok = summary[summary["status"] == "ok"].copy()
+    ok = best_rows(summary)
     critical = chi_peak_line(ok)
     transition = q_gradient_line(ok)
     critical.to_csv(table_dir / "fig3_critical_line_chiQ_peak.csv", index=False)
     transition.to_csv(table_dir / "fig3_transition_line_Q_gradient.csv", index=False)
-    return summary, critical, transition
+    return ok, critical, transition
 
 
 def chi_peak_line(summary: pd.DataFrame) -> pd.DataFrame:
@@ -336,9 +446,9 @@ def q_gradient_line(summary: pd.DataFrame) -> pd.DataFrame:
         e0 = group["E0"].to_numpy(float)
         q = group["Q_mean"].to_numpy(float)
         gradient = np.gradient(q, e0)
-        if np.all(~np.isfinite(gradient)):
-            continue
         finite_gradient = np.where(np.isfinite(gradient), gradient, -np.inf)
+        if np.all(finite_gradient == -np.inf):
+            continue
         grad_idx = int(np.argmax(finite_gradient))
         e_interp, flag = parabolic_peak(e0, finite_gradient, grad_idx)
         before_idx = max(0, grad_idx - 1)
@@ -363,7 +473,7 @@ def q_gradient_line(summary: pd.DataFrame) -> pd.DataFrame:
 
 def parabolic_peak(x: np.ndarray, y: np.ndarray, index: int) -> tuple[float, str]:
     if index <= 0 or index >= len(x) - 1:
-        return float(x[index]), "edge_peak_no_interp"
+        return float(x[index]), "edge_peak"
     x3 = x[index - 1 : index + 2]
     y3 = y[index - 1 : index + 2]
     if not np.all(np.isfinite(x3)) or not np.all(np.isfinite(y3)):
@@ -380,33 +490,22 @@ def parabolic_peak(x: np.ndarray, y: np.ndarray, index: int) -> tuple[float, str
         return float(x[index]), "interp_failed"
 
 
-def plot_all(config: dict[str, Any], summary: pd.DataFrame, critical: pd.DataFrame, transition: pd.DataFrame) -> None:
-    ok = summary[summary["status"] == "ok"].copy()
-    figure_dir = resolve_path(config["figure_dir"])
+def plot_all(config: dict[str, Any], run_id: str | None, summary: pd.DataFrame, critical: pd.DataFrame, transition: pd.DataFrame) -> None:
+    figure_dir = scoped_path(config, "figure_dir", run_id)
     figure_dir.mkdir(parents=True, exist_ok=True)
-    if ok.empty:
+    if summary.empty:
         return
+    plot_combined(summary, critical, transition, figure_dir / "fig3_parameter_space_critical_search.png")
     plot_heatmap(
-        ok,
-        metric="Q_mean",
-        title="Order parameter",
-        colorbar_label="Q",
-        output=figure_dir / "fig3_order_parameter_Q_full.png",
-        critical=critical,
-        transition=transition,
-        log_color=False,
-    )
-    plot_heatmap(
-        ok,
+        summary,
         metric="chi_Q",
         title="Order parameter fluctuations",
         colorbar_label="chi_Q",
-        output=figure_dir / "fig3_order_parameter_fluctuations_chiQ_full.png",
+        output=figure_dir / "fig3_chiQ_critical_line.png",
         critical=critical,
         transition=transition,
         log_color=True,
     )
-    plot_combined(ok, critical, transition, figure_dir / "fig3_parameter_space_full.png")
 
 
 def plot_heatmap(
@@ -424,13 +523,9 @@ def plot_heatmap(
 
     pivot = pivot_metric(summary, metric)
     values = pivot.to_numpy(float)
-    fig, ax = plt.subplots(figsize=(5.2, 4.0), dpi=220)
+    fig, ax = plt.subplots(figsize=(5.4, 4.1), dpi=220)
     extent = [pivot.columns.min(), pivot.columns.max(), pivot.index.min(), pivot.index.max()]
-    norm = None
-    if log_color:
-        positive = values[np.isfinite(values) & (values > 0)]
-        if positive.size:
-            norm = LogNorm(vmin=max(positive.min(), 1e-6), vmax=positive.max())
+    norm = log_norm(values) if log_color else None
     image = ax.imshow(values, origin="lower", aspect="auto", extent=extent, interpolation="nearest", norm=norm)
     overlay_lines(ax, critical, transition)
     ax.set_xlabel("E0")
@@ -444,22 +539,16 @@ def plot_heatmap(
 
 def plot_combined(summary: pd.DataFrame, critical: pd.DataFrame, transition: pd.DataFrame, output: Path) -> None:
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LogNorm
 
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.0), dpi=220)
-    for ax, metric, title, label, log_color in [
+    fig, axes = plt.subplots(1, 2, figsize=(10.7, 4.1), dpi=220)
+    for ax, metric, title, label, use_log in [
         (axes[0], "Q_mean", "Order parameter", "Q", False),
         (axes[1], "chi_Q", "Order parameter fluctuations", "chi_Q", True),
     ]:
         pivot = pivot_metric(summary, metric)
         values = pivot.to_numpy(float)
         extent = [pivot.columns.min(), pivot.columns.max(), pivot.index.min(), pivot.index.max()]
-        norm = None
-        if log_color:
-            positive = values[np.isfinite(values) & (values > 0)]
-            if positive.size:
-                norm = LogNorm(vmin=max(positive.min(), 1e-6), vmax=positive.max())
-        image = ax.imshow(values, origin="lower", aspect="auto", extent=extent, interpolation="nearest", norm=norm)
+        image = ax.imshow(values, origin="lower", aspect="auto", extent=extent, interpolation="nearest", norm=log_norm(values) if use_log else None)
         overlay_lines(ax, critical, transition)
         ax.set_xlabel("E0")
         ax.set_ylabel("I0")
@@ -470,13 +559,22 @@ def plot_combined(summary: pd.DataFrame, critical: pd.DataFrame, transition: pd.
     plt.close(fig)
 
 
+def log_norm(values: np.ndarray) -> Any:
+    from matplotlib.colors import LogNorm
+
+    positive = values[np.isfinite(values) & (values > 0)]
+    if positive.size == 0:
+        return None
+    return LogNorm(vmin=max(float(positive.min()), 1e-6), vmax=float(positive.max()))
+
+
 def pivot_metric(summary: pd.DataFrame, metric: str) -> pd.DataFrame:
     return summary.pivot_table(index="I0", columns="E0", values=metric, aggfunc="mean").sort_index().sort_index(axis=1)
 
 
 def overlay_lines(ax: Any, critical: pd.DataFrame, transition: pd.DataFrame) -> None:
     if not critical.empty:
-        ax.plot(critical["E0_peak_interp"], critical["I0"], color="black", linewidth=1.6, marker="o", markersize=2.2, label="chi_Q peak")
+        ax.plot(critical["E0_peak_interp"], critical["I0"], color="black", linewidth=1.7, marker="o", markersize=2.2, label="chi_Q peak")
     if not transition.empty:
         ax.plot(
             transition["E0_transition_interp"],
@@ -491,47 +589,83 @@ def overlay_lines(ax: Any, critical: pd.DataFrame, transition: pd.DataFrame) -> 
     ax.legend(frameon=True, fontsize=6, loc="best")
 
 
+def ensure_fresh_run_root(config: dict[str, Any], run_id: str | None) -> None:
+    run_root = scoped_path(config, "run_root", run_id)
+    if run_root.exists():
+        raise FileExistsError(
+            f"Run root already exists: {run_root}. This workflow has no resume mode; "
+            "choose --run-id for a new run or remove the old directory intentionally."
+        )
+
+
+def collect_existing_tasks(config: dict[str, Any], run_id: str | None) -> list[Task]:
+    tasks: list[Task] = []
+    for stage in ["coarse", "refine"]:
+        seed_dir = stage_seed_dir(config, run_id, stage)
+        if not seed_dir.exists():
+            continue
+        for seed_path in sorted(seed_dir.glob("*.seed")):
+            seed_values = read_seed(seed_path)
+            e0 = float(seed_values["sigma"])
+            i0 = float(seed_values["delta"])
+            run_name = seed_path.stem
+            tasks.append(
+                Task(
+                    stage=stage,
+                    run_name=run_name,
+                    e0=e0,
+                    i0=i0,
+                    seed_path=seed_path,
+                    run_dir=stage_run_dir(config, run_id, stage) / run_name,
+                )
+            )
+    return tasks
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    tasks = build_tasks(config)
-    if args.limit is not None:
-        tasks = tasks[: args.limit]
-    workers = args.workers or min(4, max(1, (os_cpu_count() or 1)))
+    workers = args.workers or min(4, max(1, os_cpu_count() or 1))
+    coarse_tasks = build_coarse_tasks(config, args.run_id, args.limit_i0)
 
     if args.dry_run:
+        max_refine = len(i0_values(config, args.limit_i0)) * (int(round((2 * float(config["refine"]["half_width"])) / float(config["refine"]["step"]))) + 1)
         print(f"config={config['_config_path']}")
-        print(f"tasks={len(tasks)}")
         print(f"workers={workers}")
-        if tasks:
-            print(f"first={tasks[0]}")
-            print(f"last={tasks[-1]}")
+        print(f"coarse_tasks={len(coarse_tasks)}")
+        print(f"refine_tasks_max={max_refine}")
+        print(f"estimated_total_max={len(coarse_tasks) + max_refine}")
+        if coarse_tasks:
+            print(f"first={coarse_tasks[0]}")
+            print(f"last={coarse_tasks[-1]}")
         return
 
-    generate_seeds(config, tasks)
-    if args.generate_only:
-        print(f"Generated {len(tasks)} seed files in {resolve_path(config['generated_config_dir'])}")
+    if args.summarize_only:
+        tasks = collect_existing_tasks(config, args.run_id)
+        summary = summarize_tasks(config, tasks)
+        ok, critical, transition = write_tables(config, args.run_id, summary)
+        plot_all(config, args.run_id, ok, critical, transition)
+        print(f"Summary rows: {len(summary)}")
+        print(f"Critical line rows: {len(critical)}")
+        print(f"Transition line rows: {len(transition)}")
         return
 
-    if not args.summarize_only:
-        run_tasks(config, tasks, workers=workers, resume=args.resume, timeout=args.timeout)
+    ensure_fresh_run_root(config, args.run_id)
+    generate_seeds(config, coarse_tasks)
+    run_tasks(config, args.run_id, "coarse", coarse_tasks, workers=workers, timeout=args.timeout)
+    coarse_summary = summarize_tasks(config, coarse_tasks)
+    refine_tasks = build_refine_tasks(config, args.run_id, coarse_summary)
+    generate_seeds(config, refine_tasks)
+    run_tasks(config, args.run_id, "refine", refine_tasks, workers=workers, timeout=args.timeout)
 
-    summary, critical, transition = summarize(config, tasks)
-    plot_all(config, summary, critical, transition)
+    summary = pd.concat([coarse_summary, summarize_tasks(config, refine_tasks)], ignore_index=True)
+    ok, critical, transition = write_tables(config, args.run_id, summary)
+    plot_all(config, args.run_id, ok, critical, transition)
     print(f"Summary rows: {len(summary)}")
     print(f"Critical line rows: {len(critical)}")
     print(f"Transition line rows: {len(transition)}")
-    print(f"Tables: {resolve_path(config['table_dir'])}")
-    print(f"Figures: {resolve_path(config['figure_dir'])}")
-
-
-def os_cpu_count() -> int | None:
-    try:
-        import os
-
-        return os.cpu_count()
-    except Exception:  # noqa: BLE001
-        return None
+    print(f"Tables: {scoped_path(config, 'table_dir', args.run_id)}")
+    print(f"Figures: {scoped_path(config, 'figure_dir', args.run_id)}")
 
 
 if __name__ == "__main__":

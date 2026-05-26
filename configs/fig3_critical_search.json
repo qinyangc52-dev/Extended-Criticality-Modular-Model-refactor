@@ -1,0 +1,49 @@
+{
+  "name": "fig3_critical_search",
+  "base_seed": "configs/experiments/stationary_e69_i11_bin1.seed",
+  "generated_config_dir": "results/generated_configs/fig3_critical_search",
+  "run_root": "results/runs/fig3_critical_search",
+  "figure_dir": "results/figures",
+  "table_dir": "results/tables",
+  "log_dir": "results/logs",
+  "executable": "build/criticality_sim",
+  "coarse_e0": {
+    "start": 0.0,
+    "stop": 10.0,
+    "step": 0.5
+  },
+  "i0": {
+    "start": 0.0,
+    "stop": 1.9,
+    "step": 0.1
+  },
+  "refine": {
+    "half_width": 0.4,
+    "step": 0.1
+  },
+  "seed_updates": {
+    "seed": 1256874,
+    "tmpdir": "output",
+    "topo": "tract1",
+    "S": 66,
+    "Z": 200,
+    "G": 12,
+    "K": 100,
+    "P": 20,
+    "sort": 0,
+    "swap": 1,
+    "range": 400,
+    "bin": 1,
+    "flush": 30,
+    "tmax": 20000,
+    "rho": 1,
+    "alpha": 0.5,
+    "pout": 20,
+    "maxsp": 4194304
+  },
+  "analysis": {
+    "pout": 20,
+    "last_fraction": 0.5,
+    "replay_threshold": 0.8
+  }
+}
