@@ -48,6 +48,125 @@ def plot_avalanche_distribution(
     return fig, ax
 
 
+def plot_fig5_paper_style(
+    avalanches_by_label: dict[str, pd.DataFrame],
+    size_fit,
+    duration_fit,
+    output: str | Path | None = None,
+):
+    colors = {
+        "E0=6.9, I0=1.1": "#77AA33",
+        "E0=6.8, I0=1.1": "#2233FF",
+        "E0=5.7, I0=1.1": "#FF3333",
+    }
+
+    with plt.rc_context(
+        {
+            "font.size": 7,
+            "axes.labelsize": 8,
+            "xtick.labelsize": 7,
+            "ytick.labelsize": 7,
+            "legend.fontsize": 7,
+        }
+    ):
+        fig, axes = plt.subplots(1, 2, figsize=(6.1, 2.25), dpi=220)
+        specs = (
+            (axes[0], "size", "P(S)", "S", size_fit, rf"$\alpha={size_fit.alpha:.2f}$", "(a)"),
+            (axes[1], "duration_ms", "P(T)", "T", duration_fit, rf"$\beta={duration_fit.alpha:.2f}$", "(b)"),
+        )
+        for ax, value, ylabel, xlabel, fit, fit_text, panel in specs:
+            for label, frame in avalanches_by_label.items():
+                if str(label).lower() == "pooled":
+                    continue
+                data = frame[value].to_numpy(dtype=float)
+                data = data[np.isfinite(data) & (data > 0)]
+                if data.size == 0:
+                    continue
+                bins = np.logspace(np.log10(data.min()), np.log10(data.max()), 25)
+                counts, edges = np.histogram(data, bins=bins, density=True)
+                centers = np.sqrt(edges[:-1] * edges[1:])
+                valid = counts > 0
+                ax.plot(
+                    centers[valid],
+                    counts[valid],
+                    marker="o",
+                    linewidth=1.0,
+                    markersize=2.7,
+                    color=colors.get(label),
+                    label=label,
+                )
+            all_data = pd.concat([frame[value] for frame in avalanches_by_label.values()], ignore_index=True).to_numpy(dtype=float)
+            all_data = all_data[np.isfinite(all_data) & (all_data > 0)]
+            xs = np.logspace(np.log10(max(fit.xmin, all_data.min())), np.log10(all_data.max()), 100)
+            ys = xs ** (-fit.alpha)
+            ys *= 0.18 / ys.max()
+            ax.plot(xs, ys, linestyle="--", color="black", linewidth=0.9, label=fit_text)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.text(-0.13, 1.04, panel, transform=ax.transAxes, fontsize=8, fontweight="bold")
+            ax.text(0.42, 0.78, "critical region", transform=ax.transAxes, fontsize=6)
+            ax.text(0.47, 0.62, "subcritical\nregion", transform=ax.transAxes, fontsize=6)
+        axes[0].legend(frameon=True, loc="best")
+        fig.tight_layout()
+        if output:
+            output = Path(output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output)
+            fig.savefig(output.with_suffix(".svg"))
+        return fig, axes
+
+
+def plot_avalanche_st_line(
+    avalanches_by_label: dict[str, pd.DataFrame],
+    *,
+    bins: int = 14,
+    output: str | Path | None = None,
+):
+    fig, ax = plt.subplots(figsize=(4.2, 3.2), dpi=180)
+    for label, frame in avalanches_by_label.items():
+        data = frame[["duration_ms", "size"]].dropna()
+        data = data[(data["duration_ms"] > 0) & (data["size"] > 0)]
+        if data.empty:
+            continue
+        if str(label).lower() == "pooled":
+            continue
+        t_values = data["duration_ms"].to_numpy(dtype=float)
+        s_values = data["size"].to_numpy(dtype=float)
+        if np.unique(t_values).size < 2:
+            continue
+        edges = np.logspace(np.log10(t_values.min()), np.log10(t_values.max()), bins + 1)
+        centers = np.sqrt(edges[:-1] * edges[1:])
+        mean_s = []
+        mean_t = []
+        for left, right, center in zip(edges[:-1], edges[1:], centers):
+            if right == edges[-1]:
+                mask = (t_values >= left) & (t_values <= right)
+            else:
+                mask = (t_values >= left) & (t_values < right)
+            if mask.sum() == 0:
+                continue
+            mean_t.append(center)
+            mean_s.append(float(np.mean(s_values[mask])))
+        if not mean_t:
+            continue
+        ax.plot(mean_t, mean_s, marker="o", linewidth=1.2, markersize=3, label=label)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("T")
+    ax.set_ylabel("Mean S")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    if output:
+        output = Path(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output)
+    return fig, ax
+
+
 def plot_hysteresis(medie_frame: pd.DataFrame, output: str | Path | None = None):
     fig, axes = plt.subplots(3, 1, figsize=(4.8, 6.0), dpi=160, sharex=True)
     axes[0].plot(medie_frame["sigma"], medie_frame["rate_hz"], linewidth=1.1)

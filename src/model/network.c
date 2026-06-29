@@ -209,7 +209,7 @@ void network::hmatrix(void)
         }
      }
   }
-
+ 
 void network::neuronipattern(void)
   {
    fprintf(stderr,"[network] selecting neurons for patterns\n");
@@ -429,7 +429,7 @@ network::network(void)
    H=ivector(0,P-1);
    char tmpfile[PATH_MAX];
    sprintf(tmpfile,"%s/CONNESSIONI5-%s",tmpdir,name2);
-   FILE *stream=(file&1)?fopenf("%s","r",tmpfile):NULL;
+   FILE *stream=(file&1)?fopenf("%s","rb",tmpfile):NULL;
    if (stream)
      {
       if (fread(sites[0],sizeof(int),P*(long)S,stream));
@@ -479,7 +479,7 @@ network::network(void)
       if (file&2)
         {
          debug(0,"scrivo pattern & connessioni nel file %s (%g Gb)\n",tmpfile,4e-9*P*(S+N)+8e-9*(P+N)*N);
-         stream=fopenf("%s","w",tmpfile);
+         stream=fopenf("%s","wb",tmpfile);
          if (fwrite(sites[0],sizeof(int),P*(long)S,stream));
          if (fwrite(H,sizeof(int),P,stream));
          if (fwrite(who[0],sizeof(int),P*(long)N,stream));

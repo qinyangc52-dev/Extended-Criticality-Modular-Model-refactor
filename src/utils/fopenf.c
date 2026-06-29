@@ -72,7 +72,8 @@ void makedir(const char *path,int mode)
 
 FILE *fopenf(const char *format,const char *mode,...)
   {
-   if (strcmp(mode,"r") && strcmp(mode,"w") && strcmp(mode,"a"))
+   if (strcmp(mode,"r") && strcmp(mode,"w") && strcmp(mode,"a") &&
+       strcmp(mode,"rb") && strcmp(mode,"wb") && strcmp(mode,"ab"))
      {
       fprintf(stderr,"fopenf: mode \"%s\" non riconosciuto\n",mode);
       exit(1);
@@ -106,7 +107,7 @@ FILE *fopenf(const char *format,const char *mode,...)
       strcpy(path,buffer);
      }
    if (root && path[0]!='/') sprintf(buffer,"%s/%s",root,path); else strcpy(buffer,path);
-   if (strcmp(mode,"r")) makedir(buffer);
+   if (strcmp(mode,"r") && strcmp(mode,"rb")) makedir(buffer);
    FILE *stream=fopen(buffer,mode);
    return stream;
   }
